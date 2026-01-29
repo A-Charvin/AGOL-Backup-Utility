@@ -1,4 +1,4 @@
-# Frontenac AGOL Backup Utility
+# AGOL Backup Utility
 
 A comprehensive backup and restore solution for ArcGIS Online (AGOL) and ArcGIS Portal items. This utility provides three main operations: scanning and cataloging authoritative layers, creating flexible backups in multiple formats, and restoring items from those backups.
 
@@ -511,7 +511,7 @@ python backup.py --csv items.csv --dest backups/ --mode ocm_batch
 ## File Structure
 
 ```
-frontenac-agol-backup/
+agol-backup-utility/
 ├── ui.py                    # GUI application
 ├── scan.py                    # Layer scanner
 ├── backup.py                  # Backup engine
@@ -813,7 +813,7 @@ For technical support or questions:
 
 ## Related Projects: Dependency Visualiser
 
-As part of the development of the Frontenac AGOL Backup Utility, the **[Dependency Visualiser](https://github.com/A-Charvin/fc/tree/main/OCluster)** project was created to help manage and understand item relationships within ArcGIS Online and Portal.
+As part of the development of the AGOL Backup Utility, the **[Dependency Visualiser](https://github.com/A-Charvin/fc/tree/main/OCluster)** project was created to help manage and understand item relationships within ArcGIS Online and Portal.
 
 ### Overview
 
@@ -821,7 +821,6 @@ The Dependency Visualiser is a companion tool that:
 - **Maps item relationships**: Visualizes connections between Web Maps, Web Services, Feature Layers, and other AGOL/Portal items
 - **Identifies dependencies**: Shows which items depend on others, helping to understand the impact of changes or deletions
 - **Supports backup planning**: Helps determine which items should be backed up together to maintain data integrity
-- **Generates dependency reports**: Creates comprehensive documentation of item relationships
 
 ### Use Cases
 
@@ -832,7 +831,7 @@ The Dependency Visualiser is a companion tool that:
 
 ### Connection to This Utility
 
-While the Frontenac AGOL Backup Utility focuses on creating backups and restoring items, the Dependency Visualiser complements it by providing visibility into:
+While the AGOL Backup Utility focuses on creating backups and restoring items, the Dependency Visualiser complements it by providing visibility into:
 - Which items should be backed up together
 - The order in which items should be restored to maintain relationships
 - The potential impact of selective backups or restores
@@ -841,7 +840,7 @@ While the Frontenac AGOL Backup Utility focuses on creating backups and restorin
 
 The two projects work together:
 1. Use **Dependency Visualiser** to understand your item relationships
-2. Use **Frontenac AGOL Backup Utility** to execute backups/restores based on those insights
+2. Use **AGOL Backup Utility** to execute backups/restores based on those insights
 3. Leverage insights from the Dependency Visualiser when planning OCM batch backups
 
 ---

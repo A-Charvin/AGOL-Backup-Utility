@@ -854,7 +854,7 @@ The two projects work together:
 
 Looking back, there are a few things I might have approached differently:
 
-* Structuring the system more modularly, breaking it into smaller files—though I wanted to avoid scattering too many tiny files across the project.
+* Structuring the system more modularly, breaking it into smaller files. (I wanted to avoid scattering too many tiny files across the project. Since that seems to distract people from using it)
 * Performing a more thorough refactor from the outset.
 * Rethinking the choice of Tkinter for the UI, although avoiding external dependencies was important.
 
@@ -862,7 +862,6 @@ As a concept, this project demonstrates that this functionality is achievable. M
 whether to build upon, refine, or adapt in their own ways. The goal is simple: make this capability accessible while I continue learning along the way.
 
 ---
-
 
 ## References
 

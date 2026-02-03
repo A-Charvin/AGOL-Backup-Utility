@@ -803,7 +803,13 @@ For technical support or questions:
 
 ## Changelog
 
-### Version 1.0 (2026-01)
+### Version 1.1 (03/02/2026)
+- GUI updates.
+- Non functional Restore button fixed
+- Restore script updated with more verbose logging.
+- OCM limitation - It will skip if an item already exists while restoring. (To prevent data lose, If you want to restore, remove the existing files from AGOL)
+
+### Version 1.0 (2026-02)
 - Initial release with three backup modes
 - GUI application with real-time logging
 - Support for .zip and .contentexport formats

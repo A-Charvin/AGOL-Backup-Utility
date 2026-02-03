@@ -5,7 +5,7 @@ import zipfile
 import shutil
 import argparse
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime
+import datetime as dt
 from arcgis.gis import GIS
 
 # =====================================================================
@@ -21,7 +21,7 @@ def _ensure_log_dir():
 
 def _get_log_file_path() -> str:
     _ensure_log_dir()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join(LOG_DIR, f"restore_{timestamp}.log")
 
 def _write_to_log(msg: str):
@@ -224,7 +224,7 @@ def restore_contentexport(
             item_ids = []
             imported_by_type = {}
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             
             if isinstance(imported_items, list):
                 log(f"[OCM] Import returned a list of {len(imported_items)} item(s):\n")
@@ -356,41 +356,68 @@ def restore_contentexport(
 # STANDARD ZIP RESTORE (for .zip files)
 # =====================================================================
 def find_metadata_file(extract_dir: str) -> Optional[str]:
-    """Find the metadata file in extracted directory"""
+    """Find the metadata file in extracted directory (searches recursively)"""
     try:
+        # First try top level
         for f in os.listdir(extract_dir):
             if f.endswith("_metadata.json") and not f.endswith("_metadata_full.json"):
                 return os.path.join(extract_dir, f)
+        
+        # If not found, search in subdirectories
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.endswith("_metadata.json") and not f.endswith("_metadata_full.json"):
+                    return os.path.join(root, f)
     except Exception as e:
         warn(f"Error searching for metadata: {e}")
     return None
 
 def find_data_file(extract_dir: str) -> Optional[str]:
-    """Find the data JSON file in extracted directory"""
+    """Find the data JSON file in extracted directory (searches recursively)"""
     try:
+        # First try top level
         for f in os.listdir(extract_dir):
             if f.endswith("_data.json"):
                 return os.path.join(extract_dir, f)
+        
+        # If not found, search in subdirectories
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.endswith("_data.json"):
+                    return os.path.join(root, f)
     except Exception as e:
         warn(f"Error searching for data file: {e}")
     return None
 
 def find_thumbnail(extract_dir: str) -> Optional[str]:
-    """Find thumbnail image in extracted directory"""
+    """Find thumbnail image in extracted directory (searches recursively)"""
     try:
+        # First try top level
         for f in os.listdir(extract_dir):
             if f.lower() in ["thumbnail.png", "thumbnail.jpg", "thumbnail.jpeg"]:
                 return os.path.join(extract_dir, f)
+        
+        # If not found, search in subdirectories
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.lower() in ["thumbnail.png", "thumbnail.jpg", "thumbnail.jpeg"]:
+                    return os.path.join(root, f)
     except Exception as e:
         warn(f"Error searching for thumbnail: {e}")
     return None
 
 def find_resources_zip(extract_dir: str) -> Optional[str]:
-    """Find resources.zip in extracted directory"""
+    """Find resources.zip in extracted directory (searches recursively)"""
     try:
+        # First try top level
         resources_path = os.path.join(extract_dir, "resources.zip")
         if os.path.isfile(resources_path):
             return resources_path
+        
+        # If not found, search in subdirectories
+        for root, dirs, files in os.walk(extract_dir):
+            if "resources.zip" in files:
+                return os.path.join(root, "resources.zip")
     except Exception as e:
         warn(f"Error searching for resources.zip: {e}")
     return None
@@ -404,16 +431,28 @@ def load_backup_artifacts(extract_dir: str) -> Dict[str, Any]:
         info("No metadata.json found, creating minimal metadata")
         meta = {}
         base_title = os.path.basename(extract_dir)
+        info(f"Will default to 'Web Map' type (no metadata available)")
     else:
         meta = load_json_if_exists(meta_file) or {}
-        base_title = os.path.basename(meta_file).replace("_metadata.json", "")
+        # Use title from metadata, fallback to filename
+        base_title = meta.get("title") or os.path.basename(meta_file).replace("_metadata.json", "")
         info(f"Loaded metadata from: {os.path.basename(meta_file)}")
+        
+        # Log the detected item type from metadata - THIS IS CRITICAL
+        detected_type = meta.get("type", "Unknown")
+        info(f"✓ Item type from metadata.json: '{detected_type}'")
+        
+        if not detected_type or detected_type == "Unknown":
+            warn(f"⚠ Could not determine item type from metadata")
+            warn(f"⚠ Will default to 'Web Map'")
     
     data_json = load_json_if_exists(data_file) if data_file else None
     if data_file and data_json:
         info(f"Loaded data from: {os.path.basename(data_file)}")
     elif data_file:
         warn(f"Data file exists but could not be parsed: {data_file}")
+    else:
+        info(f"No data file found in backup")
     
     thumbnail = find_thumbnail(extract_dir)
     if thumbnail:
@@ -533,43 +572,93 @@ def restore_zip(
     gis: GIS,
     keep_metadata: bool = True
 ) -> Optional[str]:
-    """Restore a standard .zip backup"""
+    """
+    Restore a standard .zip backup.
+    
+    Supports:
+    - Feature Services (publishes from FGDB)
+    - Web Maps
+    - Web Apps
+    - Survey123 Forms
+    - Other item types
+    
+    Handles nested folders and the backup structure properly.
+    """
     extract_dir = None
     try:
         log(f"\n{'='*70}")
-        log(f"Restoring from .zip: {zip_path}")
+        log(f"Restoring from .zip: {os.path.basename(zip_path)}")
         log(f"{'='*70}\n")
         
+        # Extract the backup
         extract_dir = extract_zip(zip_path)
         info(f"Backup extracted to: {extract_dir}")
         
+        # Load all backup artifacts
         art = load_backup_artifacts(extract_dir)
         
-        info(f"Backup info:")
-        info(f"  Title: {art['base_title']}")
-        info(f"  Type: {art['meta'].get('type', 'Unknown')}")
-        info(f"  Has metadata: {bool(art['meta'])}")
-        info(f"  Has data: {bool(art['data_json'])}")
-        info(f"  Has thumbnail: {bool(art['thumbnail'])}")
-        info(f"  Has resources: {bool(art['resources_zip'])}")
+        # Get metadata to determine item type
+        meta = art.get("meta", {})
+        item_type = meta.get("type", "Web Map")
+        base_title = art.get("base_title", "Restored Item")
         
-        item_id = create_item(
-            gis,
-            base_title=art["base_title"],
-            meta=art["meta"],
-            item_type=art["meta"].get("type"),
-            folder=None,
-            thumbnail=art["thumbnail"],
-            text_data=art["data_json"]
-        )
+        info(f"\nBackup Information:")
+        info(f"  Title: {base_title}")
+        info(f"  Type: {item_type}")
+        info(f"  Has metadata: {bool(meta)}")
+        info(f"  Has data: {bool(art.get('data_json'))}")
+        info(f"  Has thumbnail: {bool(art.get('thumbnail'))}")
+        info(f"  Has resources: {bool(art.get('resources_zip'))}")
         
-        # Get the created item and restore resources
-        info(f"Retrieving created item...")
+        # Add timestamp to prevent naming conflicts
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_title = f"{base_title}_{timestamp}"
+        
+        # Handle different item types
+        item_id = None
+        
+        if item_type == "Feature Service":
+            # Feature Services need to be published from FGDB
+            info(f"\nDetected Feature Service - attempting to publish from geodatabase...")
+            item_id = restore_feature_service_from_zip(
+                gis=gis,
+                extract_dir=extract_dir,
+                meta=meta,
+                new_title=new_title,
+                keep_metadata=keep_metadata
+            )
+        else:
+            # Standard item creation (Web Maps, Apps, Survey123, etc.)
+            info(f"\nRestoring as standard item...")
+            item_id = create_item(
+                gis,
+                base_title=new_title,
+                meta=meta if keep_metadata else {},
+                item_type=item_type,
+                folder=None,
+                thumbnail=art.get("thumbnail"),
+                text_data=art.get("data_json")
+            )
+        
+        if not item_id:
+            err(f"Failed to create item from backup")
+            return None
+        
+        # Restore resources
+        info(f"\nRestoring resources...")
         new_item = gis.content.get(item_id)
-        restore_resources(new_item, art["resources_zip"])
+        if new_item:
+            restore_resources(new_item, art.get("resources_zip"))
+        else:
+            warn(f"Could not retrieve created item {item_id} for resource restoration")
         
-        ok(f"Successfully restored item: {item_id}")
-        log(f"\n{'='*70}\n")
+        log(f"\n{'='*70}")
+        ok(f"ZIP Restore completed successfully!")
+        ok(f"Item ID: {item_id}")
+        ok(f"New Title: {new_title}")
+        ok(f"Type: {item_type}")
+        log(f"{'='*70}\n")
+        
         return item_id
         
     except Exception as e:
@@ -585,6 +674,197 @@ def restore_zip(
                 info(f"Cleanup complete")
             except Exception as e:
                 warn(f"Could not clean up {extract_dir}: {e}")
+
+
+def restore_feature_service_from_zip(
+    gis: GIS,
+    extract_dir: str,
+    meta: Dict[str, Any],
+    new_title: str,
+    keep_metadata: bool = True
+) -> Optional[str]:
+    """
+    Restore a Feature Service from a ZIP backup.
+    
+    Handles:
+    1. Finding the exported geodatabase (.gdb or _export.zip)
+    2. Publishing the geodatabase as a hosted feature service
+    3. Applying metadata from the backup
+    """
+    try:
+        # Find the geodatabase
+        gdb_path = find_geodatabase(extract_dir)
+        if not gdb_path:
+            err(f"Feature Service backup detected but no geodatabase found")
+            err(f"Searched for: .gdb folder or _export.zip")
+            return None
+        
+        info(f"Found geodatabase: {os.path.basename(gdb_path)}")
+        
+        # If it's a .zip, extract it first
+        if gdb_path.endswith(".zip"):
+            gdb_extract_dir = os.path.join(os.path.dirname(gdb_path), "gdb_extract")
+            os.makedirs(gdb_extract_dir, exist_ok=True)
+            info(f"Extracting geodatabase ZIP...")
+            with zipfile.ZipFile(gdb_path, "r") as zf:
+                zf.extractall(gdb_extract_dir)
+            
+            # Find the actual .gdb folder
+            for root, dirs, _ in os.walk(gdb_extract_dir):
+                for d in dirs:
+                    if d.endswith(".gdb"):
+                        gdb_path = os.path.join(root, d)
+                        break
+            
+            if not gdb_path.endswith(".gdb"):
+                err(f"Could not find .gdb folder after extracting _export.zip")
+                return None
+        
+        info(f"Publishing Feature Service from geodatabase...")
+        info(f"Title: {new_title}")
+        
+        # Publish the feature service
+        # Using publish method from arcgis.gis.Item
+        # This creates a Feature Service from the geodatabase
+        try:
+            # Try to publish using the standard method
+            from arcgis.gis import Item
+            
+            # Create item from the geodatabase
+            publish_result = gis.content.publish_csv(
+                file_path=gdb_path,
+                item_id=None,
+                publish_parameters={
+                    "name": new_title,
+                    "targetSr": {"latestWkid": 3857},
+                    "type": "Feature Service"
+                }
+            )
+            
+            if publish_result:
+                item_id = publish_result.id
+                ok(f"Feature Service published: {item_id}")
+                
+                # Update with metadata if keeping it
+                if keep_metadata and meta:
+                    try:
+                        published_item = gis.content.get(item_id)
+                        if published_item:
+                            # Update title and other properties
+                            published_item.update(
+                                item_properties={
+                                    "title": new_title,
+                                    "tags": meta.get("tags", []),
+                                    "description": meta.get("description", ""),
+                                    "snippet": meta.get("snippet", ""),
+                                    "accessInformation": meta.get("accessInformation", ""),
+                                    "licenseInfo": meta.get("licenseInfo", "")
+                                }
+                            )
+                            ok(f"Metadata updated")
+                    except Exception as m_err:
+                        warn(f"Could not update metadata: {m_err}")
+                
+                return item_id
+            else:
+                err(f"publish_csv returned no result")
+                return None
+                
+        except Exception as pub_err:
+            warn(f"Standard publish method failed: {pub_err}")
+            warn(f"Attempting alternative publication method...")
+            
+            # Fallback: Create a manual feature service item
+            # This is more basic but more reliable
+            try:
+                item_id = create_feature_service_item(
+                    gis=gis,
+                    title=new_title,
+                    meta=meta if keep_metadata else {}
+                )
+                if item_id:
+                    warn(f"Created basic Feature Service item (data import requires manual steps)")
+                    return item_id
+            except Exception as alt_err:
+                err(f"Alternative method also failed: {alt_err}")
+                return None
+                
+    except Exception as e:
+        err(f"Feature Service restore failed: {e}")
+        import traceback
+        err(f"Traceback: {traceback.format_exc()}")
+        return None
+
+
+def find_geodatabase(extract_dir: str) -> Optional[str]:
+    """
+    Find a geodatabase in the extracted backup directory.
+    
+    Looks for:
+    1. .gdb folders (geodatabase)
+    2. _export.zip files (zipped geodatabase)
+    
+    Returns the path to whichever is found first.
+    """
+    try:
+        # Walk through all directories looking for .gdb or _export.zip
+        for root, dirs, files in os.walk(extract_dir):
+            # Check for .gdb folder
+            for d in dirs:
+                if d.endswith(".gdb"):
+                    return os.path.join(root, d)
+            
+            # Check for _export.zip
+            for f in files:
+                if f.endswith("_export.zip"):
+                    return os.path.join(root, f)
+        
+        return None
+    except Exception as e:
+        err(f"Error searching for geodatabase: {e}")
+        return None
+
+
+def create_feature_service_item(
+    gis: GIS,
+    title: str,
+    meta: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Create a basic Feature Service item (fallback method).
+    
+    This creates an empty Feature Service item with metadata.
+    Data would need to be added separately.
+    """
+    try:
+        info(f"Creating Feature Service item: {title}")
+        
+        # Create the service using create_service
+        service_name = title.replace(" ", "_")[:50]
+        
+        new_service = gis.content.create_service(
+            name=service_name,
+            service_type="featureService",
+            item_properties={
+                "title": title,
+                "tags": meta.get("tags", []),
+                "description": meta.get("description", ""),
+                "snippet": meta.get("snippet", ""),
+                "accessInformation": meta.get("accessInformation", ""),
+                "licenseInfo": meta.get("licenseInfo", "")
+            }
+        )
+        
+        if new_service:
+            ok(f"Feature Service created: {new_service.id}")
+            return new_service.id
+        else:
+            err(f"create_service returned None")
+            return None
+            
+    except Exception as e:
+        err(f"Could not create Feature Service item: {e}")
+        return None
 
 # =====================================================================
 # MAIN RESTORE DISPATCHER

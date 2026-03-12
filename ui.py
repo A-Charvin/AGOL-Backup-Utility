@@ -255,7 +255,10 @@ class App(tk.Tk):
         self._LogMsg(f"[DEBUG] CSV path: {CsvPath}\n")
         self._LogMsg(f"[DEBUG] Index path: {IndexPath}\n")
         
-        Cmd = [sys.executable, ScanScript, "--out", CsvPath, "--index", IndexPath]
+        # Cmd = [sys.executable, ScanScript, "--out", CsvPath, "--index", IndexPath]
+        # Without Skip this will also generate Dependancy Graph which can take hours to finish.
+        Cmd = [sys.executable, ScanScript, "--out", CsvPath, "--index", IndexPath, "--skip-graph"]
+
         self._LogMsg(f"[DEBUG] Command: {' '.join(Cmd)}\n")
         
         print(f"[DIRECT PRINT] Starting run with command: {Cmd}")
@@ -746,3 +749,4 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     App().mainloop()
+

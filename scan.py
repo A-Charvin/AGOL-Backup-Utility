@@ -169,7 +169,7 @@ def run_graph_pipeline(gis, all_items, json_file, gml_file):
         itemgraph = create_dependency_graph(
             gis,
             all_items,
-            outside_org=True,
+            outside_org=False,
             include_reverse=True
         )
         log(f"ItemGraph built: {len(itemgraph.all_items())} total nodes.")
@@ -331,3 +331,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

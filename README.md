@@ -231,9 +231,15 @@ python scan.py --out output/AuthInventory.csv --index output/scan_index.csv --ma
 ```
 
 **Arguments:**
-- `--out`: Output CSV file path (default: `AuthInventory.csv`)
-- `--index`: Index file for tracking changes (default: `scan_index.csv`)
-- `--max`: Maximum items to scan (default: `10000`)
+| Flag | Default | Purpose |
+|---|---|---|
+| `--out` | `AuthInventory.csv` | CSV output path |
+| `--index` | `scan_index.csv` | Delta index path |
+| `--json` | `content_audit_graph.json` | Graph JSON output |
+| `--gml` | `content_audit_graph.gml` | Graph GML output |
+| `--max` | `10000` | Max items to fetch |
+| `--skip-inventory` | off | Skip CSV pipeline |
+| `--skip-graph` | off | Skip graph pipeline |
 
 #### Backup Command
 
@@ -276,8 +282,8 @@ python restore.py --backup backups/item_name_20250129_120000.zip --connection ho
 ```
 1. SCAN
    ├─ Run scan.py
-   ├─ Creates: AuthInventory.csv, scan_index.csv
-   └─ Identifies authoritative items
+   ├─ Creates: AuthInventory.csv, scan_index.csv, content_audit_graph.json, content_audit_graph.gml
+   └─ Identifies authoritative items & creates dependency tree.
 
 2. BACKUP
    ├─ Select items from CSV
@@ -322,30 +328,33 @@ python restore.py --backup backups/item_name_20250129_120000.zip --connection ho
 
 ### Layer Scanner (`scan.py`)
 
-**Purpose:** Query AGOL/Portal and identify authoritative, catalogable content
+**Purpose:** Query AGOL/Portal to identify authoritative content and build a full dependency graph of all portal items - combined into a single pass.
 
 **Key Functions:**
-- `GenerateInventory()`: Main scanning function
-  - Queries AGOL for items with `content_status:org_authoritative OR content_status:public_authoritative`
-  - Performs strict validation (filters false positives)
-  - Implements delta change detection using index
-  - Appends new/updated records to CSV
 
-- `GetItemDetails()`: Extracts core metadata
-  - Title, ID, Type, Owner
-  - Creation/modification timestamps
-  - Tags, description, access information
-  - REST URL and item page URL
+- `fetch_all_items()`: Single broad `content.search()` call (no filter) that retrieves all portal items. Results are shared by both pipelines to avoid duplicate API calls.
+- `run_inventory_pipeline()`: Filters and exports authoritative items to CSV.
+  - Applies strict client-side validation against `VALID_STATUSES` (`org_authoritative`, `public_authoritative`) - server-side query is no longer used; the broad fetch feeds this filter instead.
+  - Implements delta change detection via index file - skips items unchanged since last run.
+  - Appends new/updated records to CSV.
+- `run_graph_pipeline()`: Builds a full dependency graph of all portal items using `ItemGraph`.
+  - Registers all items as nodes, extracts edges, identifies orphaned/abandoned items, and ranks high-risk items by dependent count.
+  - Filters edges to internal-only references for JSON/viz output; full graph preserved in GML.
+- `get_item_details()`: Extracts core metadata - Title, ID, Type, Owner, timestamps, Tags, REST URL, Item Page URL, ContentStatus.
+- `load_index()` / `save_index()`: Read/write the delta-tracking index (item ID → last modified timestamp).
+- `connect_to_gis()`: Connects via `GIS("home")` using the active ArcGIS Pro/Python profile.
 
 **Scanning Strategy:**
-1. Server-side query filters by content status
-2. Strict client-side validation (prevents fuzzy matches)
-3. Delta detection skips unchanged items
-4. Index-based tracking for incremental runs
+1. Single `content.search(query="")` fetches all portal items once.
+2. Inventory pipeline applies strict client-side status filter (no fuzzy server-side query).
+3. Delta detection skips items with no changes since last run.
+4. Graph pipeline runs `create_dependency_graph()` on the full item set (can take 20min–2hrs on large portals).
 
 **Output Files:**
-- `AuthInventory.csv`: Complete item inventory with metadata
-- Index file: Tracks item IDs and modification timestamps
+- `AuthInventory.csv` - Authoritative items inventory with metadata (appended incrementally).
+- `scan_index.csv` - Delta-tracking index (item IDs + modification timestamps).
+- `content_audit_graph.json` - Full dependency graph (nodes, edges, orphan flags, high-risk ranking).
+- `content_audit_graph.gml` - Complete graph including external references, for use in graph tools.
 
 ---
 
@@ -804,6 +813,12 @@ For technical support or questions:
 
 ## Changelog
 
+### Version 1.2 (12/03/2026)
+- Scan option enhancement.
+- Dependency tree creation feature added to scan.
+- Ability to skip Scan pipelines (Choose between Inventory record or dependency graph creation or have both.
+- Dependency graph creation can take a while (hours if there are too many items. It is thus skipped/turned off by default.
+  
 ### Version 1.1.1 (03/02/2026)
 - UI updates.
 - Non functional Restore button fixed

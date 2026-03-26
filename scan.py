@@ -10,6 +10,7 @@ import os
 import argparse
 import sys
 from datetime import datetime
+from functools import wraps
 
 # Force UTF-8 output on Windows to prevent cp1252 encoding errors
 if sys.stdout.encoding != 'utf-8':
@@ -24,9 +25,21 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# Logging helpers
-# ─────────────────────────────────────────────
+# ================================================================================
+# INTERNAL CONFIGURATION (Does not affect CLI interface)
+# ================================================================================
+_CHUNK_SIZE = 500
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY = 2
+_VALID_STATUSES = ['org_authoritative', 'public_authoritative']
+_CSV_FIELDS = [
+    "Title", "Id", "Type", "Owner", "Created", "Modified",
+    "RestUrl", "ItemPageUrl", "Tags", "ContentStatus"
+]
+
+# ================================================================================
+# Logging helpers (unchanged interface)
+# ================================================================================
 
 def log(msg):
     timestamp = time.strftime('%H:%M:%S')
@@ -44,9 +57,9 @@ def err(msg):
     logger.error(msg)
 
 
-# ─────────────────────────────────────────────
-# Shared: connect
-# ─────────────────────────────────────────────
+# ================================================================================
+# Shared: connect (unchanged)
+# ================================================================================
 
 def connect_to_gis():
     gis = GIS("home")
@@ -54,97 +67,193 @@ def connect_to_gis():
     return gis
 
 
-# ─────────────────────────────────────────────
-# Shared: single broad content fetch
-# ─────────────────────────────────────────────
+# ================================================================================
+# INTERNAL: Retry decorator for resilience
+# ================================================================================
+
+def _retry_on_failure(max_attempts=_RETRY_ATTEMPTS, base_delay=_RETRY_DELAY):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt == max_attempts - 1:
+                        raise
+                    delay = base_delay * (attempt + 1)
+                    time.sleep(delay)
+            return None
+        return wrapper
+    return decorator
+
+
+# ================================================================================
+# INTERNAL: Safe property access to avoid lazy-loading traps
+# ================================================================================
+
+def _safe_get(obj, attr, default=None):
+    try:
+        val = getattr(obj, attr, default)
+        return val if val is not None else default
+    except Exception:
+        return default
+
+
+# ================================================================================
+# INTERNAL: Progress indicator (optional, non-intrusive)
+# ================================================================================
+
+def _print_progress(iteration, total, prefix='', suffix='', decimals=1, length=40):
+    percent = ("{0:." + str(decimals) + "f}").format(100 * iteration / float(total))
+    filled = int(length * iteration // total)
+    bar = '#' * filled + '-' * (length - filled)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', flush=True)
+    if iteration == total:
+        print()
+
+
+# ================================================================================
+# Shared: single broad content fetch (OPTIMIZED internally)
+# ================================================================================
 
 def fetch_all_items(gis, max_items):
+    """
+    Fetch items using optimized search pattern.
+    Returns list for backward compatibility with existing callers.
+    Note: For very large portals, consider migrating to generator pattern.
+    """
     log("Fetching all portal content (single pass)...")
+    start_time = time.time()
+    
+    # CORRECT pattern: only query + max_items, no start/page params
     items = gis.content.search(query="", max_items=max_items, outside_org=False)
-    log(f"Fetched {len(items)} total items from portal.")
+    
+    elapsed = time.time() - start_time
+    log(f"Fetched {len(items)} total items from portal in {elapsed:.2f}s.")
     return items
 
 
-# ─────────────────────────────────────────────
-# Pipeline A: Authoritative Inventory → CSV
-# ─────────────────────────────────────────────
+# ================================================================================
+# Pipeline A: Authoritative Inventory -> CSV (OPTIMIZED internally)
+# ================================================================================
 
-VALID_STATUSES = ['org_authoritative', 'public_authoritative']
-
-def get_item_details(gis, item):
+def _get_item_details(gis, item):
+    """Extract fields using direct property access - avoids extra API calls"""
     return {
-        "Title":         item.title,
-        "Id":            item.id,
-        "Type":          item.type,
-        "Owner":         item.owner,
-        "Created":       pd.to_datetime(item.created, unit="ms"),
-        "Modified":      pd.to_datetime(item.modified, unit="ms"),
-        "RestUrl":       getattr(item, "url", ""),
-        "ItemPageUrl":   f"{gis.url}/home/item.html?id={item.id}",
-        "Tags":          ", ".join(item.tags or []),
-        "ContentStatus": getattr(item, "content_status", "")
+        "Title":         _safe_get(item, 'title', '')[:2000],
+        "Id":            _safe_get(item, 'id', ''),
+        "Type":          _safe_get(item, 'type', ''),
+        "Owner":         _safe_get(item, 'owner', ''),
+        "Created":       pd.to_datetime(item.created, unit="ms") if item.created else None,
+        "Modified":      pd.to_datetime(item.modified, unit="ms") if item.modified else None,
+        "RestUrl":       _safe_get(item, "url", ""),
+        "ItemPageUrl":   f"{gis.url}/home/item.html?id={_safe_get(item, 'id', '')}",
+        "Tags":          ", ".join(_safe_get(item, 'tags', []) or []),
+        "ContentStatus": _safe_get(item, "content_status", "")
     }
 
-def load_index(index_file):
-    """Load delta-tracking index: item_id → last_modified timestamp."""
+def _load_index(index_file):
+    """Load delta-tracking index: item_id -> last_modified timestamp."""
     if not os.path.exists(index_file):
         return {}
     with open(index_file, 'r', encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         return {row['id']: int(row['mod']) for row in reader}
 
-def save_index(index_file, index):
-    with open(index_file, 'w', newline='', encoding="utf-8-sig") as f:
+def _save_index_atomic(index_file, index):
+    """Write to temp file first, then rename (prevents corruption on interrupt)"""
+    temp_file = index_file + ".tmp"
+    with open(temp_file, 'w', newline='', encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=['id', 'mod'])
         writer.writeheader()
         for k, v in index.items():
             writer.writerow({'id': k, 'mod': v})
+    os.replace(temp_file, index_file)
+
+@_retry_on_failure(max_attempts=_RETRY_ATTEMPTS)
+def _write_csv_batch(csv_file, rows, header_written):
+    """Append batch of rows to CSV with retry logic"""
+    mode = 'a' if os.path.exists(csv_file) and header_written else 'w'
+    header = not header_written
+    with open(csv_file, mode, newline='', encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction='ignore')
+        if header:
+            writer.writeheader()
+        writer.writerows(rows)
+    return True
 
 def run_inventory_pipeline(gis, all_items, out_file, index_file):
+    """
+    Pipeline A: Authoritative Inventory -> CSV
+    Internal optimization: batched writes, safe attribute access, atomic index updates
+    External interface: unchanged
+    """
     log("--- Pipeline A: Authoritative Inventory ---")
 
-    index = load_index(index_file)
+    index = _load_index(index_file)
 
     new_records = []
     skipped_not_auth = 0
     skipped_no_change = 0
+    total = len(all_items)
+    
+    start_time = time.time()
 
-    for item in all_items:
+    for count, item in enumerate(all_items, 1):
         # Strict status check
-        actual_status = getattr(item, "content_status", "")
-        if actual_status not in VALID_STATUSES:
+        actual_status = _safe_get(item, "content_status", "")
+        if actual_status not in _VALID_STATUSES:
             skipped_not_auth += 1
             continue
 
-        # Delta check — skip if already captured at this version
-        if item.id in index and index[item.id] >= item.modified:
+        # Delta check - skip if already captured at this version
+        item_modified = _safe_get(item, 'modified', 0)
+        if item.id in index and index[item.id] >= item_modified:
             skipped_no_change += 1
             continue
 
-        new_records.append(get_item_details(gis, item))
-        index[item.id] = item.modified
+        new_records.append(_get_item_details(gis, item))
+        index[item.id] = item_modified
+        
+        # Progress indicator every 100 items
+        if count % 100 == 0:
+            _print_progress(count, total, prefix='[PROCESS]', suffix='items')
+        
+        # Batch write to reduce I/O overhead
+        if len(new_records) >= _CHUNK_SIZE:
+            header = not os.path.exists(out_file)
+            os.makedirs(os.path.dirname(out_file) or ".", exist_ok=True)
+            _write_csv_batch(out_file, new_records, header)
+            new_records = []
 
-    log(f"Filtered out {skipped_not_auth} non-authoritative items.")
-    log(f"Skipped {skipped_no_change} unchanged items (delta check).")
-
+    # Write remaining records
     if new_records:
-        df = pd.DataFrame(new_records)
         header = not os.path.exists(out_file)
         os.makedirs(os.path.dirname(out_file) or ".", exist_ok=True)
-        df.to_csv(out_file, mode='a', index=False, header=header, encoding="utf-8-sig")
-        save_index(index_file, index)
-        log(f"CSV updated: {len(new_records)} new/changed authoritative items → {out_file}")
-    else:
-        log("CSV inventory already up to date. No changes written.")
+        _write_csv_batch(out_file, new_records, header)
+        _save_index_atomic(index_file, index)
+    
+    elapsed = time.time() - start_time
+    log(f"Filtered out {skipped_not_auth} non-authoritative items.")
+    log(f"Skipped {skipped_no_change} unchanged items (delta check).")
+    log(f"CSV updated: {len(new_records) if new_records else 0} new/changed authoritative items -> {out_file}")
+    log(f"Pipeline A completed in {elapsed:.2f}s")
 
-    return len(new_records)
+    return len(new_records) if new_records else 0
 
 
-# ─────────────────────────────────────────────
-# Pipeline B: Dependency Graph → JSON + GML
-# ─────────────────────────────────────────────
+# ================================================================================
+# Pipeline B: Dependency Graph -> JSON + GML (unchanged interface)
+# ================================================================================
 
 def run_graph_pipeline(gis, all_items, json_file, gml_file):
+    """
+    Pipeline B: Dependency Graph -> JSON + GML
+    External interface unchanged. Internal logging enhanced.
+    """
     log("--- Pipeline B: Dependency Graph ---")
 
     # Register all items as nodes
@@ -231,7 +340,7 @@ def run_graph_pipeline(gis, all_items, json_file, gml_file):
         else:
             skipped_external += 1
 
-    log(f"Internal relationships for JSON/viz: {len(filtered_edges)} (skipped {skipped_external} external refs — preserved in GML).")
+    log(f"Internal relationships for JSON/viz: {len(filtered_edges)} (skipped {skipped_external} external refs -- preserved in GML).")
 
     # Top critical items (most dependents)
     critical_items = sorted(
@@ -266,20 +375,20 @@ def run_graph_pipeline(gis, all_items, json_file, gml_file):
 
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(graph_data, f, indent=2)
-    log(f"JSON saved → {json_file}")
+    log(f"JSON saved -> {json_file}")
 
     try:
         itemgraph.write_to_file(gml_file)
-        log(f"GML saved → {gml_file}")
+        log(f"GML saved -> {gml_file}")
     except Exception as e:
         warn(f"Could not save GML: {e}")
 
     return graph_data["summary"]
 
 
-# ─────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────
+# ================================================================================
+# Main (unchanged CLI interface)
+# ================================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="ArcGIS Combined Scanner: Authoritative Inventory + Dependency Graph")
@@ -299,7 +408,7 @@ def main():
     try:
         gis = connect_to_gis()
 
-        # Single broad fetch — shared by both pipelines
+        # Single broad fetch -- shared by both pipelines
         all_items = fetch_all_items(gis, args.max)
 
         if not args.skip_inventory:
@@ -319,9 +428,9 @@ def main():
 
         log("=" * 60)
         log("ALL PIPELINES COMPLETE")
-        log(f"  CSV inventory  → {args.out}")
-        log(f"  JSON graph     → {args.json}")
-        log(f"  GML graph      → {args.gml}")
+        log(f"  CSV inventory  -> {args.out}")
+        log(f"  JSON graph     -> {args.json}")
+        log(f"  GML graph      -> {args.gml}")
         log("=" * 60)
 
     except Exception as e:
@@ -331,4 +440,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

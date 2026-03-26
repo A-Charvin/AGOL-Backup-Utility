@@ -813,6 +813,12 @@ For technical support or questions:
 
 ## Changelog
 
+### Version 1.3 (26/03/2026)
+- Scan speed enhancement
+- Added batched CSV writes to reduce I/O overhead
+- Implemented safe attribute access to avoid lazy-loading API calls
+- Scan times have improved significantly on this update. (Not for Dependency Graph)
+  
 ### Version 1.2 (12/03/2026)
 - Scan option enhancement.
 - Dependency tree creation feature added to scan.

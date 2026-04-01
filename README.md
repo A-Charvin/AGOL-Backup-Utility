@@ -813,6 +813,17 @@ For technical support or questions:
 
 ## Changelog
 
+### Version 1.4 (01/04/2026) (Artemis II)
+- Modernize UI architecture for stability and responsiveness
+- Replaced static layout with responsive grid configuration.
+- All UI updates now route through the main thread to prevent crashes during background operations.
+- Logging output is throttled to eliminate interface stutter.
+- Accent buttons use a hybrid styling approach to maintain modern Windows visuals while ensuring text visibility.
+- Subprocess handling now reads stderr in parallel to avoid hangs.
+- Configuration saves use atomic writes to prevent corruption.
+- Added keyboard shortcuts for common actions and confirmation dialogs for destructive operations.
+- Removed unused imports and standardized path handling with pathlib.
+
 ### Version 1.3 (26/03/2026)
 - Scan speed enhancement
 - Added batched CSV writes to reduce I/O overhead
